@@ -57,7 +57,10 @@ impl super::CommandEncoder {
         key: super::FramebufferKey,
     ) -> Result<vk::Framebuffer, crate::DeviceError> {
         Ok(match self.framebuffers.entry(key) {
-            Entry::Occupied(e) => *e.get(),
+            Entry::Occupied(mut e) => {
+                e.get_mut().1 = true;
+                e.get().0
+            }
             Entry::Vacant(e) => {
                 let super::FramebufferKey {
                     raw_pass,
@@ -74,7 +77,7 @@ impl super::CommandEncoder {
                     .attachments(attachment_views);
 
                 let raw = unsafe { self.device.raw.create_framebuffer(&vk_info, None).unwrap() };
-                *e.insert(raw)
+                e.insert((raw, true)).0
             }
         })
     }
@@ -181,10 +184,18 @@ impl crate::CommandEncoder for super::CommandEncoder {
         self.free
             .extend(cmd_bufs.into_iter().map(|cmd_buf| cmd_buf.raw));
         self.free.append(&mut self.discarded);
-        // Delete framebuffers from the framebuffer cache
-        for (_, framebuffer) in self.framebuffers.drain() {
-            unsafe { self.device.raw.destroy_framebuffer(framebuffer, None) };
-        }
+        // Delete the framebuffers not used since the last reset. Every command
+        // buffer this encoder recorded has completed, so none is in use, and a
+        // framebuffer is only ever this encoder's. One whose attachments are
+        // gone is never used again, since the key holds their identities, and
+        // goes at the reset after next.
+        self.framebuffers.retain(|_, (framebuffer, used)| {
+            if mem::take(used) {
+                return true;
+            }
+            unsafe { self.device.raw.destroy_framebuffer(*framebuffer, None) };
+            false
+        });
         let _ = unsafe {
             self.device
                 .raw

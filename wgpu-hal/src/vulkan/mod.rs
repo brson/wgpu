@@ -1080,7 +1080,14 @@ pub struct CommandEncoder {
     /// the given pool & location.
     end_of_pass_timer_query: Option<(vk::QueryPool, u32)>,
 
-    framebuffers: FastHashMap<FramebufferKey, vk::Framebuffer>,
+    /// Each framebuffer, and whether it was used since the last `reset_all`.
+    ///
+    /// Kept across `reset_all`, which destroys only those not used since the
+    /// one before: a frame's passes are usually the last frame's, and on some
+    /// drivers a framebuffer is expensive. A PowerVR DXT's builds a hardware
+    /// render target for each, and destroying them all on every reset cost
+    /// about half a millisecond a pass.
+    framebuffers: FastHashMap<FramebufferKey, (vk::Framebuffer, bool)>,
     temp_texture_views: FastHashMap<TempTextureViewKey, IdentifiedTextureView>,
 
     counters: Arc<wgt::HalCounters>,
@@ -1107,7 +1114,7 @@ impl Drop for CommandEncoder {
             self.device.raw.destroy_command_pool(self.raw, None);
         }
 
-        for (_, fb) in self.framebuffers.drain() {
+        for (_, (fb, _)) in self.framebuffers.drain() {
             unsafe { self.device.raw.destroy_framebuffer(fb, None) };
         }
 
